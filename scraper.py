@@ -15,11 +15,13 @@ download_dir = os.path.join(os.getcwd(), "v2ray_downloads")
 os.makedirs(download_dir, exist_ok=True)
 
 options = Options()
-options.add_argument("--start-maximized")
-options.add_argument("--disable-gpu")
+options.add_argument("--headless=new")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
-# options.add_argument("--headless")
+options.add_argument("--disable-gpu")
+options.add_argument("--window-size=1920,1080")
+options.add_argument("--disable-blink-features=AutomationControlled")
+options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 prefs = {
     "download.default_directory": download_dir,
@@ -32,18 +34,26 @@ options.add_experimental_option("prefs", prefs)
 print("🚀 Launching ChromeDriver...")
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=options)
-wait = WebDriverWait(driver, 60)
+driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+    "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+})
+driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+    "behavior": "allow",
+    "downloadPath": download_dir
+})
+
+wait = WebDriverWait(driver, 120)
 
 try:
     print("⏳ Opening website...")
     driver.get("https://openproxylist.com/v2ray/")
     
-    # ====== 40 seconds wait for site to fully load ======
-    print("⏳ Waiting 40 seconds for site to fully load...")
-    for i in range(40, 0, -1):
+    # ====== 90 seconds wait for site to fully load ======
+    print("⏳ Waiting 90 seconds for site to fully load...")
+    for i in range(90, 0, -1):
         print(f"   {i} seconds remaining...", end="\r")
         time.sleep(1)
-    print("\n✅ 40 seconds wait completed!")
+    print("\n✅ 90 seconds wait completed!")
     
     # Check page status
     print(f"Page title: {driver.title}")
@@ -55,9 +65,9 @@ try:
         print(f"📄 Processing page {page}")
         print(f"{'='*50}")
 
-        # ====== 15 seconds delay to ensure page is fully loaded ======
-        print("⏳ Waiting 15 seconds for page to fully load...")
-        for i in range(15, 0, -1):
+        # ====== 30 seconds delay to ensure page is fully loaded ======
+        print("⏳ Waiting 30 seconds for page to fully load...")
+        for i in range(30, 0, -1):
             print(f"   {i} seconds remaining...", end="\r")
             time.sleep(1)
         print("\n✅ Wait completed. Starting operations...")
@@ -121,9 +131,9 @@ try:
                 print(f"❌ Second error with Bulk Download: {e2}")
                 break
         
-        # ====== 20 seconds wait for download to complete ======
-        print("⏳ Waiting 20 seconds for download to complete...")
-        for i in range(20, 0, -1):
+        # ====== 30 seconds wait for download to complete ======
+        print("⏳ Waiting 30 seconds for download to complete...")
+        for i in range(30, 0, -1):
             print(f"   {i} seconds remaining...", end="\r")
             time.sleep(1)
         print("\n✅ Download wait time completed.")
@@ -218,11 +228,13 @@ try:
         print(f"📊 Total configs count: {total_configs}")
         print(f"📁 Final file: {merged_file}")
         print(f"{'='*50}")
+        
+        if total_configs == 0:
+            print("⚠️ No configs found in files")
+            sys.exit(1)
     else:
         print("⚠️ No txt files found!")
-        print("Download folder contents:")
-        for f in os.listdir(download_dir):
-            print(f"   - {f}")
+        sys.exit(1)
 
 except Exception as e:
     print("\n" + "="*50)
@@ -234,17 +246,8 @@ except Exception as e:
     import traceback
     traceback.print_exc()
     print("="*50)
+    sys.exit(1)
 
 finally:
-    print("\n" + "="*50)
-    print("Browser will stay open for 30 seconds...")
-    print("Press Ctrl+C to close manually")
-    print("="*50)
-    
-    try:
-        time.sleep(30)
-    except KeyboardInterrupt:
-        print("\n👋 Manual close initiated...")
-    
     driver.quit()
     print("👋 Browser closed")

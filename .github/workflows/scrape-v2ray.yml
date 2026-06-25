@@ -2,9 +2,8 @@ name: Scrape V2Ray Configs
 
 on:
   schedule:
-    # Run every 6 hours
-    - cron: '0 */6 * * *'
-  workflow_dispatch:  # Allow manual trigger
+    - cron: '0 */12 * * *'  # Every 12 hours
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -15,9 +14,10 @@ on:
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     permissions:
-      contents: write  # Needed to push changes
+      contents: write
     
     steps:
       - name: Checkout repository
@@ -28,78 +28,80 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install system dependencies
+      - name: Install Chrome
         run: |
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
           sudo apt-get update
-          sudo apt-get install -y \
-            chromium-browser \
-            xvfb \
-            unzip \
-            wget
+          sudo apt-get install -y google-chrome-stable
+          google-chrome --version
       
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install selenium webdriver-manager
       
-      - name: Create download directory
-        run: mkdir -p v2ray_downloads
-      
       - name: Run scraper
         run: |
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1920x1080x24 &
           python scraper.py
+        continue-on-error: true  # Don't stop if scraper fails
       
-      - name: Remove old config file
+      - name: Check for output file
+        id: check_file
         run: |
           if [ -f "ALL_V2RAY_CONFIGS.txt" ]; then
-            rm -f ALL_V2RAY_CONFIGS.txt
-            echo "Old config file removed"
-          fi
-      
-      - name: Verify output
-        run: |
-          if [ -f "ALL_V2RAY_CONFIGS.txt" ]; then
-            echo "✅ Config file generated successfully"
-            echo "File size: $(wc -c < ALL_V2RAY_CONFIGS.txt) bytes"
-            echo "Total lines: $(wc -l < ALL_V2RAY_CONFIGS.txt)"
+            echo "FILE_EXISTS=true" >> $GITHUB_OUTPUT
+            echo "FILE_SIZE=$(wc -c < ALL_V2RAY_CONFIGS.txt)" >> $GITHUB_OUTPUT
+            echo "LINE_COUNT=$(wc -l < ALL_V2RAY_CONFIGS.txt)" >> $GITHUB_OUTPUT
+            echo "✅ Config file found"
+            echo "Size: $FILE_SIZE bytes"
+            echo "Lines: $LINE_COUNT"
           else
-            echo "❌ Config file not found!"
-            exit 1
+            echo "FILE_EXISTS=false" >> $GITHUB_OUTPUT
+            echo "❌ Config file not found"
           fi
       
-      - name: Commit and push changes
+      - name: Commit and push
+        if: steps.check_file.outputs.FILE_EXISTS == 'true'
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # Remove old file from tracking
+          # Remove old file
           git rm --cached ALL_V2RAY_CONFIGS.txt 2>/dev/null || true
           
-          # Add new files
+          # Add new file
           git add ALL_V2RAY_CONFIGS.txt
           
-          # Check if there are changes to commit
+          # Only commit if there are changes
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "🔄 Auto-update V2Ray configs [skip ci]"
+            git commit -m "🔄 Update V2Ray configs - ${{ steps.check_file.outputs.LINE_COUNT }} configs"
             git push
-            echo "✅ Changes pushed to repository"
+            echo "✅ Changes pushed"
           fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Upload artifact (optional backup)
+      - name: Upload artifact
+        if: steps.check_file.outputs.FILE_EXISTS == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: v2ray-configs
+          name: v2ray-configs-${{ github.run_id }}
           path: ALL_V2RAY_CONFIGS.txt
+          retention-days: 30
+      
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots-${{ github.run_id }}
+          path: |
+            page_loaded.png
+            *.png
           retention-days: 7
       
-      - name: Cleanup
-        if: always()
+      - name: Notify on failure
+        if: failure()
         run: |
-          rm -rf v2ray_downloads/
-          echo "Cleanup completed"
+          echo "❌ Workflow failed!"
+          echo "Check artifacts for debug screenshots"

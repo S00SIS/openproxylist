@@ -2,22 +2,16 @@ name: Scrape V2Ray Configs
 
 on:
   schedule:
-    - cron: '0 */12 * * *'  # Every 12 hours
+    - cron: '0 */12 * * *'
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - 'scraper.py'
-      - '.github/workflows/scrape-v2ray.yml'
+
+permissions:
+  contents: write
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    
-    permissions:
-      contents: write
+    timeout-minutes: 60
     
     steps:
       - name: Checkout repository
@@ -28,80 +22,23 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install Chrome
-        run: |
-          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
-          google-chrome --version
-      
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install selenium webdriver-manager
       
       - name: Run scraper
-        run: |
-          python scraper.py
-        continue-on-error: true  # Don't stop if scraper fails
-      
-      - name: Check for output file
-        id: check_file
-        run: |
-          if [ -f "ALL_V2RAY_CONFIGS.txt" ]; then
-            echo "FILE_EXISTS=true" >> $GITHUB_OUTPUT
-            echo "FILE_SIZE=$(wc -c < ALL_V2RAY_CONFIGS.txt)" >> $GITHUB_OUTPUT
-            echo "LINE_COUNT=$(wc -l < ALL_V2RAY_CONFIGS.txt)" >> $GITHUB_OUTPUT
-            echo "✅ Config file found"
-            echo "Size: $FILE_SIZE bytes"
-            echo "Lines: $LINE_COUNT"
-          else
-            echo "FILE_EXISTS=false" >> $GITHUB_OUTPUT
-            echo "❌ Config file not found"
-          fi
+        run: python scraper.py
       
       - name: Commit and push
-        if: steps.check_file.outputs.FILE_EXISTS == 'true'
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # Remove old file
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git rm --cached ALL_V2RAY_CONFIGS.txt 2>/dev/null || true
-          
-          # Add new file
           git add ALL_V2RAY_CONFIGS.txt
-          
-          # Only commit if there are changes
           if git diff --staged --quiet; then
-            echo "No changes to commit"
+            echo "No changes"
           else
-            git commit -m "🔄 Update V2Ray configs - ${{ steps.check_file.outputs.LINE_COUNT }} configs"
+            git commit -m "🔄 Update V2Ray configs"
             git push
-            echo "✅ Changes pushed"
           fi
-      
-      - name: Upload artifact
-        if: steps.check_file.outputs.FILE_EXISTS == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: v2ray-configs-${{ github.run_id }}
-          path: ALL_V2RAY_CONFIGS.txt
-          retention-days: 30
-      
-      - name: Upload screenshots on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots-${{ github.run_id }}
-          path: |
-            page_loaded.png
-            *.png
-          retention-days: 7
-      
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "❌ Workflow failed!"
-          echo "Check artifacts for debug screenshots"

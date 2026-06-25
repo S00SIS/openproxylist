@@ -2,12 +2,17 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import os
+import glob
 import sys
 
-# ==================== Configuration ====================
+download_dir = os.path.join(os.getcwd(), "v2ray_downloads")
+os.makedirs(download_dir, exist_ok=True)
+
 options = Options()
 options.add_argument("--headless=new")
 options.add_argument("--no-sandbox")
@@ -17,6 +22,14 @@ options.add_argument("--window-size=1920,1080")
 options.add_argument("--disable-blink-features=AutomationControlled")
 options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
+prefs = {
+    "download.default_directory": download_dir,
+    "download.prompt_for_download": False,
+    "download.directory_upgrade": True,
+    "safebrowsing.enabled": True
+}
+options.add_experimental_option("prefs", prefs)
+
 print("🚀 Launching ChromeDriver...")
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=options)
@@ -24,91 +37,126 @@ driver = webdriver.Chrome(service=service, options=options)
 driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
     "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
 })
+driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+    "behavior": "allow",
+    "downloadPath": download_dir
+})
+
+wait = WebDriverWait(driver, 120)
 
 try:
     print("⏳ Opening website...")
     driver.get("https://openproxylist.com/v2ray/")
     
-    # Wait for Cloudflare
-    print("⏳ Waiting 60 seconds...")
+    print("⏳ Waiting 60 seconds for page to fully load...")
     time.sleep(60)
     
-    print(f"\n📄 Title: {driver.title}")
-    print(f"🔗 URL: {driver.current_url}")
+    page = 1
     
-    # Save full page source
-    with open("page_source.html", "w", encoding="utf-8") as f:
-        f.write(driver.page_source)
-    print("💾 Page source saved to page_source.html")
-    
-    # Save screenshot
-    driver.save_screenshot("page_screenshot.png")
-    print("📸 Screenshot saved to page_screenshot.png")
-    
-    # Look for ALL elements with IDs
-    all_elements = driver.find_elements(By.XPATH, "//*[@id]")
-    ids = [elem.get_attribute('id') for elem in all_elements if elem.get_attribute('id')]
-    print(f"\n🔍 Elements with IDs ({len(ids)}):")
-    for id in ids[:30]:
-        print(f"   - {id}")
-    
-    # Look for buttons
-    buttons = driver.find_elements(By.TAG_NAME, "button")
-    print(f"\n🔘 Buttons ({len(buttons)}):")
-    for btn in buttons[:10]:
+    while True:
+        print(f"\n{'='*50}")
+        print(f"📄 Processing page {page}")
+        print(f"{'='*50}")
+        
+        # Wait 60 seconds for elements to appear
+        print("⏳ Waiting 60 seconds for Select All to appear...")
+        time.sleep(60)
+        
+        # Click Select All
         try:
-            print(f"   - ID: {btn.get_attribute('id')}, Text: {btn.text[:50]}")
-        except:
-            pass
-    
-    # Look for all links
-    links = driver.find_elements(By.TAG_NAME, "a")
-    print(f"\n🔗 Links ({len(links)}):")
-    for link in links[:20]:
+            select_all = wait.until(EC.element_to_be_clickable((By.ID, "select-all")))
+            driver.execute_script("arguments[0].click();", select_all)
+            print("✅ Select All clicked")
+        except Exception as e:
+            print(f"❌ Select All failed: {str(e)[:100]}")
+            break
+        
+        time.sleep(5)
+        
+        # Click Bulk Download
         try:
-            href = link.get_attribute('href') or ''
-            text = link.text[:50]
-            if 'download' in href.lower() or 'next' in text.lower() or 'select' in text.lower():
-                print(f"   - Text: {text}, Href: {href[:100]}")
-        except:
-            pass
+            bulk_download = wait.until(EC.element_to_be_clickable((By.ID, "bulk-download")))
+            driver.execute_script("arguments[0].click();", bulk_download)
+            print("✅ Bulk Download clicked")
+        except Exception as e:
+            print(f"❌ Bulk Download failed: {str(e)[:100]}")
+            break
+        
+        print("⏳ Waiting 30 seconds for download...")
+        time.sleep(30)
+        
+        # Click Next
+        try:
+            next_btn = None
+            next_selectors = [
+                "//a[contains(text(), 'Next')]",
+                "//button[contains(text(), 'Next')]",
+                "//span[contains(text(), 'Next')]",
+            ]
+            
+            for selector in next_selectors:
+                try:
+                    elements = driver.find_elements(By.XPATH, selector)
+                    for elem in elements:
+                        if elem.is_displayed() and elem.is_enabled():
+                            if "disabled" not in (elem.get_attribute("class") or ""):
+                                next_btn = elem
+                                break
+                    if next_btn:
+                        break
+                except:
+                    continue
+            
+            if next_btn:
+                driver.execute_script("arguments[0].click();", next_btn)
+                print(f"➡️ Moving to page {page + 1}")
+                page += 1
+                time.sleep(10)
+            else:
+                print("🛑 No more pages")
+                break
+                
+        except Exception as e:
+            print(f"🛑 Next failed: {str(e)[:100]}")
+            break
+
+    # Merge files
+    print(f"\n{'='*50}")
+    print("🔍 Merging files...")
+    time.sleep(10)
     
-    # Check if select-all exists
-    try:
-        select_all = driver.find_element(By.ID, "select-all")
-        print(f"\n✅ select-all found! Displayed: {select_all.is_displayed()}")
-    except:
-        print("\n❌ select-all NOT found")
+    txt_files = sorted(glob.glob(os.path.join(download_dir, "*.txt")))
+    print(f"📁 Found {len(txt_files)} files")
     
-    # Check if bulk-download exists
-    try:
-        bulk_download = driver.find_element(By.ID, "bulk-download")
-        print(f"✅ bulk-download found! Displayed: {bulk_download.is_displayed()}")
-    except:
-        print("❌ bulk-download NOT found")
-    
-    # Look for table
-    try:
-        table = driver.find_element(By.TAG_NAME, "table")
-        print(f"\n✅ Table found!")
-        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-        print(f"   Rows: {len(rows)}")
-        if rows:
-            print(f"   First row text: {rows[0].text[:100]}")
-    except:
-        print("\n❌ No table found")
-    
-    print("\n✅ Debug info collected")
-    
+    if txt_files:
+        merged_file = os.path.join(os.getcwd(), "ALL_V2RAY_CONFIGS.txt")
+        total = 0
+        
+        with open(merged_file, "w", encoding="utf-8") as outfile:
+            for i, f in enumerate(txt_files):
+                with open(f, "r", encoding="utf-8") as infile:
+                    content = infile.read().strip()
+                    if content:
+                        lines = content.split('\n')
+                        total += len(lines)
+                        outfile.write(content)
+                        if i < len(txt_files) - 1:
+                            outfile.write("\n")
+                print(f"   ✅ {os.path.basename(f)} merged")
+        
+        print(f"\n🎉 Done! {total} configs saved to ALL_V2RAY_CONFIGS.txt")
+        print(f"📏 Size: {os.path.getsize(merged_file)} bytes")
+        sys.exit(0)
+    else:
+        print("❌ No files found!")
+        sys.exit(1)
+
 except Exception as e:
     print(f"❌ Error: {e}")
     import traceback
     traceback.print_exc()
+    sys.exit(1)
 
 finally:
     driver.quit()
-
-# Upload artifact files
-print("\n📤 Upload these files as artifacts to see what's happening:")
-print("   - page_source.html")
-print("   - page_screenshot.png")
+    print("👋 Done")

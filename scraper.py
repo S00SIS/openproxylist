@@ -4,11 +4,13 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import os
 import glob
 import sys
+import random
 
 # ==================== Configuration ====================
 download_dir = os.path.join(os.getcwd(), "v2ray_downloads")
@@ -20,262 +22,327 @@ options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--disable-gpu")
 options.add_argument("--window-size=1920,1080")
+
+# Anti-detection arguments
 options.add_argument("--disable-blink-features=AutomationControlled")
+options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 options.add_experimental_option("excludeSwitches", ["enable-automation"])
 options.add_experimental_option("useAutomationExtension", False)
+
+# Additional evasion
+options.add_argument("--disable-infobars")
+options.add_argument("--disable-extensions")
+options.add_argument("--profile-directory=Default")
+options.add_argument("--disable-plugins-discovery")
+options.add_argument("--incognito")
 
 prefs = {
     "download.default_directory": download_dir,
     "download.prompt_for_download": False,
     "download.directory_upgrade": True,
-    "safebrowsing.enabled": True
+    "safebrowsing.enabled": True,
+    "credentials_enable_service": False,
+    "profile.password_manager_enabled": False,
+    "profile.default_content_setting_values.notifications": 2
 }
 options.add_experimental_option("prefs", prefs)
 
 print("🚀 Launching ChromeDriver...")
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=options)
-driver.set_page_load_timeout(120)  # Increase page load timeout
+
+# Execute CDP commands to hide automation
+driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+    "source": """
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        window.chrome = {runtime: {}};
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+            parameters.name === 'notifications' ?
+            Promise.resolve({state: Notification.permission}) :
+            originalQuery(parameters)
+        );
+    """
+})
+
+driver.set_page_load_timeout(120)
 wait = WebDriverWait(driver, 30)
 
-def wait_for_table_load(driver, wait):
-    """Wait for the proxy table to load completely"""
-    print("🔍 Waiting for table to load...")
-    
-    # Different selectors to try
-    selectors = [
-        "table",
-        "#v2ray-table",
-        ".table",
-        "tbody tr",
-        ".config-table"
-    ]
-    
-    table_found = False
-    for selector in selectors:
-        try:
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-            print(f"✅ Table found using selector: {selector}")
-            table_found = True
-            break
-        except:
-            continue
-    
-    if not table_found:
-        print("⚠️ Could not find table with any selector")
-        print(f"Page source snippet: {driver.page_source[:500]}")
-    
-    return table_found
+def human_like_delay(min_sec=1, max_sec=3):
+    """Add random delay to simulate human behavior"""
+    delay = random.uniform(min_sec, max_sec)
+    time.sleep(delay)
 
-def click_element_safely(driver, wait, element_id, element_name):
-    """Safely click an element with multiple fallback methods"""
-    methods = [
-        # Method 1: Wait for element to be clickable and click
-        lambda: wait.until(EC.element_to_be_clickable((By.ID, element_id))).click(),
-        
-        # Method 2: Scroll into view and click
-        lambda: (
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", 
-                                 driver.find_element(By.ID, element_id)),
-            time.sleep(2),
-            driver.find_element(By.ID, element_id).click()
-        ),
-        
-        # Method 3: JavaScript click
-        lambda: driver.execute_script(f"document.getElementById('{element_id}').click();"),
-        
-        # Method 4: Force click with JavaScript
-        lambda: driver.execute_script(f"""
-            var element = document.getElementById('{element_id}');
-            if(element) {{
-                element.style.display = 'block';
-                element.style.visibility = 'visible';
-                element.disabled = false;
-                element.click();
-            }}
-        """),
-    ]
+def wait_for_cloudflare_to_pass(driver, wait, timeout=180):
+    """Wait for Cloudflare challenge to complete"""
+    print("🔍 Checking for Cloudflare challenge...")
+    start_time = time.time()
     
-    for i, method in enumerate(methods, 1):
-        try:
-            print(f"   Attempting method {i} for {element_name}...")
-            method()
-            print(f"   ✅ {element_name} clicked successfully with method {i}")
+    while time.time() - start_time < timeout:
+        title = driver.title.lower()
+        current_url = driver.current_url.lower()
+        
+        # Check if we're past Cloudflare
+        if "just a moment" not in title and "cloudflare" not in title:
+            print(f"✅ Cloudflare challenge passed! Title: {driver.title}")
             return True
-        except Exception as e:
-            print(f"   ❌ Method {i} failed: {str(e)[:100]}")
-            time.sleep(2)
-            continue
+        
+        # Check if we're redirected
+        if "openproxylist.com" in current_url and "just a moment" not in title:
+            print(f"✅ Cloudflare passed (URL check)! URL: {current_url}")
+            return True
+        
+        elapsed = int(time.time() - start_time)
+        if elapsed % 10 == 0:
+            print(f"⏳ Waiting for Cloudflare... ({elapsed}s elapsed)")
+        
+        time.sleep(2)
     
+    print(f"⚠️ Cloudflare timeout after {timeout}s")
+    print(f"Final title: {driver.title}")
+    print(f"Final URL: {driver.current_url}")
     return False
+
+def get_page_content_alternative():
+    """Alternative method to get configs if UI fails"""
+    print("🔍 Trying alternative methods to extract configs...")
+    
+    # Try to get raw text from page
+    try:
+        page_text = driver.find_element(By.TAG_NAME, "body").text
+        print(f"Page text length: {len(page_text)}")
+        
+        # Look for config patterns
+        config_patterns = [
+            'vmess://', 'vless://', 'trojan://', 
+            'ss://', 'ssr://', 'socks://'
+        ]
+        
+        configs = []
+        for line in page_text.split('\n'):
+            for pattern in config_patterns:
+                if pattern in line.lower():
+                    configs.append(line.strip())
+                    break
+        
+        if configs:
+            print(f"✅ Found {len(configs)} configs in page text!")
+            return configs
+    except Exception as e:
+        print(f"❌ Error extracting page text: {e}")
+    
+    return []
 
 try:
     print("⏳ Opening website...")
     driver.get("https://openproxylist.com/v2ray/")
     
-    # Wait for page to load
-    print("⏳ Waiting 60 seconds for initial page load...")
-    time.sleep(60)
+    # Wait for Cloudflare to pass
+    if not wait_for_cloudflare_to_pass(driver, wait, timeout=120):
+        print("❌ Cloudflare challenge not passed, trying alternative approach...")
+        
+        # Save screenshot for debugging
+        driver.save_screenshot("cloudflare_blocked.png")
+        
+        # Try refreshing
+        print("🔄 Refreshing page...")
+        driver.refresh()
+        time.sleep(30)
+        
+        if not wait_for_cloudflare_to_pass(driver, wait, timeout=60):
+            print("❌ Still blocked by Cloudflare")
+            
+            # Try alternative method anyway
+            configs = get_page_content_alternative()
+            if configs:
+                merged_file = os.path.join(os.getcwd(), "ALL_V2RAY_CONFIGS.txt")
+                with open(merged_file, "w", encoding="utf-8") as f:
+                    f.write('\n'.join(configs))
+                print(f"✅ Saved {len(configs)} configs from alternative method")
+                sys.exit(0)
+            else:
+                sys.exit(1)
     
-    # Take screenshot for debugging (optional)
-    try:
-        driver.save_screenshot("page_loaded.png")
-        print("📸 Screenshot saved as page_loaded.png")
-    except:
-        pass
-    
-    # Print page info
-    print(f"📄 Page title: {driver.title}")
-    print(f"🔗 Current URL: {driver.current_url}")
-    
-    # Wait for table
-    wait_for_table_load(driver, wait)
-    time.sleep(15)
+    # If we get here, Cloudflare is passed
+    print("✅ Page loaded successfully!")
+    human_like_delay(5, 10)
     
     page = 1
-    max_pages = 50  # Safety limit
+    max_pages = 50
     
     while page <= max_pages:
         print(f"\n{'='*50}")
         print(f"📄 Processing page {page}")
         print(f"{'='*50}")
         
-        # Additional wait for dynamic content
-        print("⏳ Waiting 20 seconds for dynamic content...")
+        human_like_delay(3, 7)
+        
+        # Try clicking Select All with multiple methods
+        select_clicked = False
+        for attempt in range(3):
+            try:
+                # Try finding by different selectors
+                selectors = [
+                    (By.ID, "select-all"),
+                    (By.XPATH, "//button[contains(text(), 'Select All')]"),
+                    (By.XPATH, "//*[contains(text(), 'Select All')]"),
+                    (By.CSS_SELECTOR, "[id*='select']"),
+                ]
+                
+                for by, selector in selectors:
+                    try:
+                        elements = driver.find_elements(by, selector)
+                        for elem in elements:
+                            if elem.is_displayed():
+                                driver.execute_script("arguments[0].click();", elem)
+                                select_clicked = True
+                                print("✅ Select All clicked!")
+                                break
+                        if select_clicked:
+                            break
+                    except:
+                        continue
+                
+                if select_clicked:
+                    break
+                    
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {str(e)[:100]}")
+                human_like_delay(2, 5)
+        
+        if not select_clicked:
+            print("⚠️ Could not click Select All, trying direct extraction...")
+            configs = get_page_content_alternative()
+            if configs:
+                # Save these configs
+                temp_file = os.path.join(download_dir, f"page_{page}.txt")
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    f.write('\n'.join(configs))
+                print(f"✅ Extracted {len(configs)} configs from page source")
+        
+        human_like_delay(3, 6)
+        
+        # Try clicking Bulk Download
+        download_clicked = False
+        for attempt in range(3):
+            try:
+                download_selectors = [
+                    (By.ID, "bulk-download"),
+                    (By.XPATH, "//button[contains(text(), 'Bulk Download')]"),
+                    (By.XPATH, "//*[contains(text(), 'Download')]"),
+                    (By.CSS_SELECTOR, "[id*='download']"),
+                ]
+                
+                for by, selector in download_selectors:
+                    try:
+                        elements = driver.find_elements(by, selector)
+                        for elem in elements:
+                            if elem.is_displayed():
+                                driver.execute_script("arguments[0].click();", elem)
+                                download_clicked = True
+                                print("✅ Bulk Download clicked!")
+                                break
+                        if download_clicked:
+                            break
+                    except:
+                        continue
+                
+                if download_clicked:
+                    break
+                    
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed: {str(e)[:100]}")
+                human_like_delay(2, 5)
+        
+        print("⏳ Waiting for download...")
         time.sleep(20)
         
-        # ====== Select All ======
-        print("🔍 Looking for Select All button...")
-        select_success = click_element_safely(driver, wait, "select-all", "Select All")
-        
-        if not select_success:
-            print("❌ Could not click Select All after all attempts")
-            # Try to find what elements exist on the page
-            all_elements = driver.find_elements(By.XPATH, "//*[@id]")
-            ids = [elem.get_attribute('id') for elem in all_elements if elem.get_attribute('id')]
-            print(f"Available IDs on page: {ids[:20]}")
-            
-            # If no select-all, maybe we're done
-            if page == 1:
-                print("⚠️ First page failed. Exiting...")
-                sys.exit(1)
-            break
-        
-        print("⏳ Waiting 15 seconds after Select All...")
-        time.sleep(15)
-        
-        # ====== Bulk Download ======
-        print("🔍 Looking for Bulk Download button...")
-        download_success = click_element_safely(driver, wait, "bulk-download", "Bulk Download")
-        
-        if not download_success:
-            print("❌ Could not click Bulk Download after all attempts")
-            break
-        
-        # Wait for download
-        print("⏳ Waiting 30 seconds for download to complete...")
-        time.sleep(30)
-        
-        # ====== Check for Next Page ======
-        print("🔍 Looking for Next button...")
-        next_found = False
-        
+        # Try to find Next button
+        next_clicked = False
         next_selectors = [
             "//a[contains(text(), 'Next')]",
             "//button[contains(text(), 'Next')]",
             "//span[contains(text(), 'Next')]",
             "//li[contains(@class, 'next')]//a",
             "//a[contains(@class, 'next')]",
-            "//button[contains(@class, 'next')]",
-            "//*[contains(@class, 'pagination')]//a[last()]",
             "//*[contains(@class, 'pagination')]//li[last()]/a",
+            "//*[@aria-label='Next']",
         ]
         
         for selector in next_selectors:
             try:
                 elements = driver.find_elements(By.XPATH, selector)
-                for element in elements:
-                    if element.is_displayed() and element.is_enabled():
-                        class_attr = element.get_attribute("class") or ""
+                for elem in elements:
+                    if elem.is_displayed():
+                        class_attr = elem.get_attribute("class") or ""
                         if "disabled" not in class_attr:
-                            print(f"   Found Next button with selector: {selector}")
-                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-                            time.sleep(5)
-                            element.click()
-                            next_found = True
+                            driver.execute_script("arguments[0].click();", elem)
+                            next_clicked = True
+                            print(f"➡️ Next page clicked!")
                             break
-                if next_found:
+                if next_clicked:
                     break
             except:
                 continue
         
-        if next_found:
-            print(f"➡️ Moving to page {page + 1}")
+        if next_clicked:
             page += 1
-            time.sleep(15)
+            human_like_delay(5, 10)
         else:
-            print("🛑 No more pages found")
+            print("🛑 No more pages")
             break
 
-    print("\n" + "="*50)
-    print(f"✅ Finished processing {page} pages")
-    print("="*50)
-
     # ==================== Merge Files ====================
-    print("\n🔍 Searching for downloaded files...")
-    time.sleep(10)
-    
-    # List all files in download directory
-    all_files = os.listdir(download_dir)
-    print(f"📁 All files in download directory: {all_files}")
+    print("\n🔍 Merging downloaded files...")
+    time.sleep(5)
     
     txt_files = sorted(glob.glob(os.path.join(download_dir, "*.txt")))
-    print(f"📁 Number of txt files found: {len(txt_files)}")
+    print(f"📁 Found {len(txt_files)} files")
     
     if txt_files:
         merged_file = os.path.join(os.getcwd(), "ALL_V2RAY_CONFIGS.txt")
-        total_configs = 0
+        all_configs = []
         
-        with open(merged_file, "w", encoding="utf-8") as outfile:
-            for i, file in enumerate(txt_files):
-                with open(file, "r", encoding="utf-8") as infile:
-                    content = infile.read().strip()
-                    if content:
-                        lines = content.split('\n')
-                        total_configs += len(lines)
-                        outfile.write(content)
-                        if i < len(txt_files) - 1:
-                            outfile.write("\n")
-                print(f"   ✅ {os.path.basename(file)} merged ({os.path.getsize(file)} bytes)")
-
-        print(f"\n{'='*50}")
-        print(f"🎉 Success!")
-        print(f"📊 Total configs: {total_configs}")
+        for file in txt_files:
+            with open(file, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if content:
+                    lines = content.split('\n')
+                    all_configs.extend(lines)
+        
+        # Remove duplicates
+        all_configs = list(dict.fromkeys(all_configs))
+        
+        with open(merged_file, "w", encoding="utf-8") as f:
+            f.write('\n'.join(all_configs))
+        
+        print(f"✅ Saved {len(all_configs)} unique configs!")
         print(f"📁 Output: {merged_file}")
-        print(f"📏 File size: {os.path.getsize(merged_file)} bytes")
-        print(f"{'='*50}")
+        print(f"📏 Size: {os.path.getsize(merged_file)} bytes")
         
-        if total_configs == 0:
-            print("⚠️ Warning: 0 configs found!")
+        if len(all_configs) > 0:
+            sys.exit(0)
+        else:
             sys.exit(1)
     else:
-        print("⚠️ No txt files found!")
-        print("This might be because:")
-        print("1. Site structure changed")
-        print("2. Download didn't work in headless mode")
-        print("3. Site blocking automated access")
+        # Try alternative: extract directly
+        print("⚠️ No files downloaded, trying alternative extraction...")
+        configs = get_page_content_alternative()
         
-        # Try to find any downloaded files
-        all_downloads = []
-        for root, dirs, files in os.walk(download_dir):
-            for file in files:
-                all_downloads.append(os.path.join(root, file))
-        print(f"All files found: {all_downloads}")
-        
-        sys.exit(1)
+        if configs:
+            merged_file = os.path.join(os.getcwd(), "ALL_V2RAY_CONFIGS.txt")
+            with open(merged_file, "w", encoding="utf-8") as f:
+                f.write('\n'.join(configs))
+            print(f"✅ Extracted {len(configs)} configs directly!")
+            sys.exit(0)
+        else:
+            print("❌ No configs found")
+            sys.exit(1)
 
 except Exception as e:
-    print(f"\n❌ Critical error: {e}")
+    print(f"❌ Error: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)

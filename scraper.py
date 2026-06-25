@@ -7,10 +7,14 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import os
+import glob
 import sys
-import re
+import requests
 
 # ==================== Configuration ====================
+download_dir = os.path.join(os.getcwd(), "v2ray_downloads")
+os.makedirs(download_dir, exist_ok=True)
+
 options = Options()
 options.add_argument("--headless=new")
 options.add_argument("--no-sandbox")
@@ -22,18 +26,31 @@ options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) App
 options.add_experimental_option("excludeSwitches", ["enable-automation"])
 options.add_experimental_option("useAutomationExtension", False)
 
+# Download preferences
+prefs = {
+    "download.default_directory": download_dir,
+    "download.prompt_for_download": False,
+    "download.directory_upgrade": True,
+    "safebrowsing.enabled": True,
+    "download.extensions_to_open": "",
+    "plugins.always_open_pdf_externally": True
+}
+options.add_experimental_option("prefs", prefs)
+
 print("🚀 Launching ChromeDriver...")
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=options)
 
-# Hide automation
 driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
     "source": """
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-        window.chrome = {runtime: {}};
     """
+})
+
+# Enable downloads in headless mode
+driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+    "behavior": "allow",
+    "downloadPath": download_dir
 })
 
 driver.set_page_load_timeout(120)
@@ -58,156 +75,95 @@ def wait_for_page_load(driver, timeout=120):
     
     return False
 
-def extract_configs_from_page(driver):
-    """Extract proxy configs directly from the page DOM"""
-    configs = set()
-    
-    # Config patterns
-    patterns = [
-        r'(vmess|vless|trojan|ss|ssr|socks|http|https)://[^\s<>"\'{}|\\^`\[\]]+',
-        r'(vmess|vless|trojan|ss|ssr|socks)://[a-zA-Z0-9+/=@:%._~#\[\]!$&\'()*+,;=-]+',
-    ]
-    
-    try:
-        # Method 1: Get all text from the page
-        page_text = driver.find_element(By.TAG_NAME, "body").text
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, page_text, re.IGNORECASE)
-            for match in matches:
-                if isinstance(match, tuple):
-                    # regex returns tuple when groups are used
-                    full_match = ''
-                    for part in match:
-                        full_match += part
-                    if len(full_match) > 20:
-                        configs.add(full_match)
-                elif len(match) > 20:
-                    configs.add(match)
-        
-        # Method 2: Look for code/pre blocks
-        code_elements = driver.find_elements(By.TAG_NAME, "code")
-        code_elements.extend(driver.find_elements(By.TAG_NAME, "pre"))
-        code_elements.extend(driver.find_elements(By.TAG_NAME, "textarea"))
-        
-        for elem in code_elements:
-            try:
-                text = elem.text or elem.get_attribute("value") or ""
-                for pattern in patterns:
-                    matches = re.findall(pattern, text, re.IGNORECASE)
-                    for match in matches:
-                        if isinstance(match, tuple):
-                            full_match = ''.join(match)
-                            if len(full_match) > 20:
-                                configs.add(full_match)
-                        elif len(match) > 20:
-                            configs.add(match)
-            except:
-                pass
-        
-        # Method 3: Get all input values
-        inputs = driver.find_elements(By.TAG_NAME, "input")
-        for inp in inputs:
-            try:
-                value = inp.get_attribute("value") or ""
-                for pattern in patterns:
-                    matches = re.findall(pattern, value, re.IGNORECASE)
-                    for match in matches:
-                        if isinstance(match, tuple):
-                            full_match = ''.join(match)
-                            if len(full_match) > 20:
-                                configs.add(full_match)
-                        elif len(match) > 20:
-                            configs.add(match)
-            except:
-                pass
-        
-        # Method 4: Check all links
-        links = driver.find_elements(By.TAG_NAME, "a")
-        for link in links:
-            try:
-                href = link.get_attribute("href") or ""
-                for pattern in patterns:
-                    matches = re.findall(pattern, href, re.IGNORECASE)
-                    for match in matches:
-                        if isinstance(match, tuple):
-                            full_match = ''.join(match)
-                            if len(full_match) > 20:
-                                configs.add(full_match)
-                        elif len(match) > 20:
-                            configs.add(match)
-            except:
-                pass
-                
-    except Exception as e:
-        print(f"❌ Error extracting configs: {e}")
-    
-    return list(configs)
+def get_cookies_dict(driver):
+    """Get cookies as dictionary for requests"""
+    cookies = {}
+    for cookie in driver.get_cookies():
+        cookies[cookie['name']] = cookie['value']
+    return cookies
 
-def extract_from_tables(driver):
-    """Extract configs from table rows"""
-    configs = set()
-    patterns = [
-        r'(vmess|vless|trojan|ss|ssr|socks|http|https)://[^\s<>"\'{}|\\^`\[\]]+',
-    ]
-    
+def download_configs_page(driver, page_num):
+    """Click select all and bulk download, then capture the downloaded file"""
     try:
-        # Find all table rows
-        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr, .table tbody tr, tr.config-row, .config-item")
+        # Click Select All
+        select_all = wait.until(EC.element_to_be_clickable((By.ID, "select-all")))
+        driver.execute_script("arguments[0].click();", select_all)
+        print("   ✅ Select All clicked")
+        time.sleep(3)
         
-        for row in rows:
-            try:
-                row_text = row.text
-                for pattern in patterns:
-                    matches = re.findall(pattern, row_text, re.IGNORECASE)
-                    for match in matches:
-                        if isinstance(match, tuple):
-                            full_match = ''.join(match)
-                            if len(full_match) > 20:
-                                configs.add(full_match)
-                        elif len(match) > 20:
-                            configs.add(match)
-            except:
-                pass
+        # Click Bulk Download
+        bulk_download = wait.until(EC.element_to_be_clickable((By.ID, "bulk-download")))
+        driver.execute_script("arguments[0].click();", bulk_download)
+        print("   ✅ Bulk Download clicked")
+        
+        # Wait for download
+        print("   ⏳ Waiting for download...")
+        time.sleep(15)
+        
+        # Check for new files
+        txt_files = sorted(glob.glob(os.path.join(download_dir, "*.txt")))
+        if txt_files:
+            print(f"   ✅ Downloaded: {os.path.basename(txt_files[-1])}")
+            return True
+        else:
+            print("   ⚠️ No file downloaded")
+            return False
+            
     except Exception as e:
-        print(f"❌ Error extracting from tables: {e}")
-    
-    return list(configs)
+        print(f"   ❌ Error: {str(e)[:100]}")
+        return False
 
-def click_and_extract(driver, wait):
-    """Try clicking elements and extracting configs"""
-    all_configs = set()
-    
-    # Extract without clicking first
-    print("📊 Extracting configs from current page...")
-    configs = extract_configs_from_page(driver)
-    table_configs = extract_from_tables(driver)
-    all_configs.update(configs)
-    all_configs.update(table_configs)
-    print(f"   Found {len(all_configs)} configs from current page")
-    
-    # Try clicking Select All if exists
+def download_via_api(driver, page_num):
+    """Alternative: Try to download using the website's API"""
     try:
-        select_btns = driver.find_elements(By.XPATH, 
-            "//*[contains(text(), 'Select All') or contains(text(), 'select all') or @id='select-all']")
-        for btn in select_btns:
-            try:
-                driver.execute_script("arguments[0].click();", btn)
-                time.sleep(2)
+        cookies = get_cookies_dict(driver)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        
+        # Get CSRF token if exists
+        page_source = driver.page_source
+        csrf_match = None
+        csrf_patterns = [
+            r'csrf_token["\']?\s*[:=]\s*["\']([^"\']+)',
+            r'name=["\']csrf_token["\']\s+value=["\']([^"\']+)',
+        ]
+        
+        for pattern in csrf_patterns:
+            match = __import__('re').search(pattern, page_source)
+            if match:
+                csrf_match = match.group(1)
                 break
+        
+        # Try different download URLs
+        download_urls = [
+            f"https://openproxylist.com/v2ray/download?page={page_num}",
+            f"https://openproxylist.com/v2ray/export?page={page_num}",
+            f"https://openproxylist.com/v2ray/bulk-download?page={page_num}",
+        ]
+        
+        for url in download_urls:
+            try:
+                data = {}
+                if csrf_match:
+                    data['csrf_token'] = csrf_match
+                
+                response = requests.get(url, headers=headers, cookies=cookies, data=data, timeout=30)
+                
+                if response.status_code == 200 and len(response.text) > 100:
+                    filename = os.path.join(download_dir, f"configs_page_{page_num}.txt")
+                    with open(filename, "w", encoding="utf-8") as f:
+                        f.write(response.text)
+                    print(f"   ✅ Downloaded via API: {filename}")
+                    return True
             except:
-                pass
-    except:
-        pass
-    
-    # Extract again after clicking
-    time.sleep(3)
-    configs = extract_configs_from_page(driver)
-    table_configs = extract_from_tables(driver)
-    all_configs.update(configs)
-    all_configs.update(table_configs)
-    
-    return list(all_configs)
+                continue
+        
+        return False
+    except Exception as e:
+        print(f"   ❌ API download failed: {e}")
+        return False
 
 try:
     print("⏳ Opening website...")
@@ -215,28 +171,31 @@ try:
     
     if not wait_for_page_load(driver, timeout=120):
         print("❌ Page failed to load")
-        driver.save_screenshot("error_screenshot.png")
         sys.exit(1)
     
-    # Wait extra for dynamic content
     print("⏳ Waiting for dynamic content...")
     time.sleep(15)
     
-    all_configs = set()
     page = 1
-    max_pages = 20
+    total_downloaded = 0
     
-    while page <= max_pages:
+    while page <= 50:
         print(f"\n{'='*50}")
         print(f"📄 Processing page {page}")
         print(f"{'='*50}")
         
-        # Extract configs from current page
-        page_configs = click_and_extract(driver, wait)
-        print(f"✅ Extracted {len(page_configs)} configs from page {page}")
-        all_configs.update(page_configs)
+        # Method 1: Try normal download
+        success = download_configs_page(driver, page)
         
-        # Try to find and click Next button
+        # Method 2: If normal download failed, try API
+        if not success:
+            print("   🔄 Trying API download...")
+            success = download_via_api(driver, page)
+        
+        if success:
+            total_downloaded += 1
+        
+        # Find Next button
         next_found = False
         next_selectors = [
             "//a[contains(text(), 'Next')]",
@@ -246,8 +205,6 @@ try:
             "//a[contains(@class, 'next')]",
             "//*[contains(@class, 'pagination')]//li[last()]/a",
             "//*[@aria-label='Next']",
-            "//a[contains(@href, 'page') and contains(text(), '▶')]",
-            "//a[contains(@href, 'page') and contains(text(), '›')]",
         ]
         
         for selector in next_selectors:
@@ -256,19 +213,11 @@ try:
                 for elem in elements:
                     if elem.is_displayed():
                         class_attr = elem.get_attribute("class") or ""
-                        parent_class = ""
-                        try:
-                            parent = elem.find_element(By.XPATH, "..")
-                            parent_class = parent.get_attribute("class") or ""
-                        except:
-                            pass
-                        
-                        if "disabled" not in class_attr and "disabled" not in parent_class:
-                            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
-                            time.sleep(2)
+                        if "disabled" not in class_attr:
                             driver.execute_script("arguments[0].click();", elem)
                             next_found = True
                             print(f"➡️ Moving to page {page + 1}")
+                            time.sleep(10)
                             break
                 if next_found:
                     break
@@ -277,34 +226,36 @@ try:
         
         if next_found:
             page += 1
-            time.sleep(10)  # Wait for new page to load
         else:
-            print("🛑 No more pages found")
+            print("🛑 No more pages")
             break
 
-    # ==================== Save Results ====================
+    # Merge files
     print(f"\n{'='*50}")
-    print(f"📊 Total unique configs found: {len(all_configs)}")
+    print("🔍 Merging downloaded files...")
+    time.sleep(5)
     
-    if all_configs:
+    txt_files = sorted(glob.glob(os.path.join(download_dir, "*.txt")))
+    print(f"📁 Found {len(txt_files)} files")
+    
+    if txt_files:
         merged_file = os.path.join(os.getcwd(), "ALL_V2RAY_CONFIGS.txt")
-        with open(merged_file, "w", encoding="utf-8") as f:
-            f.write('\n'.join(sorted(all_configs)))
+        with open(merged_file, "w", encoding="utf-8") as outfile:
+            for i, file in enumerate(txt_files):
+                with open(file, "r", encoding="utf-8") as infile:
+                    content = infile.read().strip()
+                    if content:
+                        outfile.write(content)
+                        if i < len(txt_files) - 1:
+                            outfile.write("\n")
+                print(f"   ✅ {os.path.basename(file)} merged")
         
-        print(f"✅ Saved to: {merged_file}")
-        print(f"📏 File size: {os.path.getsize(merged_file)} bytes")
-        
-        # Print first few configs as sample
-        sample = list(all_configs)[:3]
-        print("\n📋 Sample configs:")
-        for s in sample:
-            print(f"   {s[:100]}...")
-        
+        print(f"\n✅ Success!")
+        print(f"📁 Output: {merged_file}")
+        print(f"📏 Size: {os.path.getsize(merged_file)} bytes")
         sys.exit(0)
     else:
-        print("❌ No configs found!")
-        print("\nPage source sample:")
-        print(driver.page_source[:1000])
+        print("❌ No files downloaded")
         sys.exit(1)
 
 except Exception as e:
